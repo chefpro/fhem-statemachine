@@ -138,17 +138,31 @@ stateMachine_timedTransition($)
 }
 
 sub
-getEmptyTransition($)
+getTimedTransition($)
 {
   my ($current_state) = @_;
   return undef if( ref($current_state) ne 'ARRAY' );
 
    foreach my $t (@{$current_state}) {
-     return $t if( !$t->{event} );
+     return $t if( !defined($t->{event}) && defined($t->{timeout}) );
    }
 
   return undef;
 }
+
+sub
+getEnterLeaveTransition($)
+{
+  my ($current_state) = @_;
+  return undef if( ref($current_state) ne 'ARRAY' );
+
+   foreach my $t (@{$current_state}) {
+     return $t if( defined($t->{enter}) || defined($t->{leave}) );
+   }
+
+  return undef;
+}
+
 sub
 stateMachine_doTransition($$%)
 {
@@ -197,11 +211,24 @@ stateMachine_doTransition($$%)
   return undef if( !$transitions );
 
   if( defined($new_state) && defined($transitions->{$new_state}) ) {
+    # execute leave
+    my $enterleave = $hash->{STATE} ne $new_state;
+    if( my $lt = getEnterLeaveTransition($transitions->{$hash->{STATE}}) && $enterleave ) {
+      if( my $leave = $lt->{leave} ) {
+        Log3 $name, 1, "$name: leave: $leave";
+      }
+    }
+
     $hash->{STATE} = $new_state;
     $hash->{helper}{currentTransition} = $t;
     Log3 $name, 5, "$name: new state: $new_state";
 
-    if( my $t = getEmptyTransition($transitions->{$new_state}) ) {
+    if( my $et = getEnterLeaveTransition($transitions->{$new_state}) && $enterleave ) {
+      if( my $enter = $et->{enter} ) {
+        Log3 $name, 1, "$name: enter: $enter";
+      }
+    }
+    if( my $t = getTimedTransition($transitions->{$new_state}) ) {
       my $timeout = $t->{timeout};
       $hash->{helper}{timed} = { t => $t, specials => $specials };
       InternalTimer( gettimeofday()+$timeout, "stateMachine_timedTransition", $hash, 0 );
@@ -270,6 +297,8 @@ stateMachine_Notify($$)
     }
     foreach my $t (@{$current_state}) {
       next if( ref($t) ne 'HASH' );
+      next if( defined($t->{enter}) || defined($t->{leave}) );
+      next if( !defined($t->{event}) && defined($t->{timeout}) );
       my ($device,$event) = split(':', $t->{event}, 2 );
 
       if( $device ) {
