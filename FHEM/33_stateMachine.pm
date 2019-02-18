@@ -13,7 +13,6 @@ package main;
 
 use strict;
 use warnings;
-
 use Time::HiRes qw(gettimeofday);
 
 #define <fsm> stateMachine CUL_HM_HM_PB_2_WM55_2B63C7_Btn_01,CUL_HM_HM_PB_2_WM55_2B63C7_Btn_02 Sonos_Esszimmer
@@ -115,7 +114,7 @@ stateMachine_retrigger($)
   my ($hash) = @_;
   my $name  = $hash->{NAME};
 
-  Log3 $name, 5, "$name: retrigger";
+  Log3 $name, 1, "$name: retrigger";
   RemoveInternalTimer( $hash, "stateMachine_retrigger" );
 
   #FIXME: abort retrigger if condition evaluates to false ?
@@ -128,7 +127,7 @@ stateMachine_timedTransition($)
   my ($hash) = @_;
   my $name  = $hash->{NAME};
 
-  Log3 $name, 5, "$name: timedTransition";
+  Log3 $name, 1, "$name: timedTransition";
   RemoveInternalTimer( $hash, "stateMachine_timedTransition" );
 
   stateMachine_doTransition($hash, $hash->{helper}{timed}{t}, $hash->{helper}{timed}{specials});
@@ -151,13 +150,13 @@ getTimedTransition($)
 }
 
 sub
-getEnterLeaveTransition($)
+getSettingTransition($)
 {
   my ($current_state) = @_;
   return undef if( ref($current_state) ne 'ARRAY' );
 
    foreach my $t (@{$current_state}) {
-     return $t if( defined($t->{enter}) || defined($t->{leave}) );
+     return $t if( defined($t->{enter}) || defined($t->{leave}) || defined($t->{groups}));
    }
 
   return undef;
@@ -177,24 +176,25 @@ stateMachine_doTransition($$%)
 
   if( $hash->{helper}{currentTransition} && $hash->{helper}{currentTransition}->{onExit} && $new_state ne $hash->{STATE} ) {
     my $exec = EvalSpecials($hash->{helper}{currentTransition}{onExit}, %{$specials});
-    Log3 $name, 4, "$name: exec $exec";
+    Log3 $name, 1, "$name: exec $exec";
 
     AnalyzeCommandChain(undef, $exec);
   }
 
   if( $t->{onEnter} && $new_state ne $hash->{STATE} ) {
     my $exec = EvalSpecials($t->{onEnter}, %{$specials});
-    Log3 $name, 4, "$name: exec $exec";
+    Log3 $name, 1, "$name: exec $exec";
 
     AnalyzeCommandChain(undef, $exec);
   }
 
-  my $exec = EvalSpecials($t->{action}, %{$specials});
-  Log3 $name, 4, "$name: exec $exec";
-
-  my $r = AnalyzeCommandChain(undef, $exec);
-  Log3 $name, 3, "$name: return value: $r" if($r);
-  $new_state = $r if( $r && $t->{action} =~ /^{.*}$/ );
+  if( defined($t->{action})) {
+    my $exec = EvalSpecials($t->{action}, %{$specials});
+    Log3 $name, 1, "$name: exec $exec";
+    my $r = AnalyzeCommandChain(undef, $exec);
+    Log3 $name, 1, "$name: return value: $r" if($r);
+    $new_state = $r if( $r && $t->{action} =~ /^{.*}$/ );
+  }
 
   if( my $retrigger = $t->{retrigger} ) {
     if( $new_state eq $hash->{STATE} ) {
@@ -202,7 +202,7 @@ stateMachine_doTransition($$%)
       InternalTimer( gettimeofday()+$retrigger, "stateMachine_retrigger", $hash, 0 );
 
     } else {
-      Log3 $name, 2, "$name: can't retrigger with state transition";
+      Log3 $name, 1, "$name: can't retrigger with state transition";
 
     }
   }
@@ -213,19 +213,27 @@ stateMachine_doTransition($$%)
   if( defined($new_state) && defined($transitions->{$new_state}) ) {
     # execute leave
     my $enterleave = $hash->{STATE} ne $new_state;
-    if( my $lt = getEnterLeaveTransition($transitions->{$hash->{STATE}}) && $enterleave ) {
-      if( my $leave = $lt->{leave} ) {
-        Log3 $name, 1, "$name: leave: $leave";
+    if ( $enterleave ) {
+      if( my $t = getSettingTransition($transitions->{$hash->{STATE}}) ) {
+        if( my $leave = $t->{leave} ) {
+          my $exec = EvalSpecials($leave, %{$specials});
+          my $errors = AnalyzeCommandChain(undef, $exec);
+          Log3 $name, 1, "$name: exec $exec $errors";
+        }
       }
     }
 
     $hash->{STATE} = $new_state;
     $hash->{helper}{currentTransition} = $t;
-    Log3 $name, 5, "$name: new state: $new_state";
+    Log3 $name, 1, "$name: new state: $new_state";
 
-    if( my $et = getEnterLeaveTransition($transitions->{$new_state}) && $enterleave ) {
-      if( my $enter = $et->{enter} ) {
-        Log3 $name, 1, "$name: enter: $enter";
+    if ( $enterleave ) {
+      if( my $t = getSettingTransition($transitions->{$new_state}) ) {
+        if( my $enter = $t->{enter} ) {
+          my $exec = EvalSpecials($enter, %{$specials});
+          my $errors = AnalyzeCommandChain(undef, $exec);
+          Log3 $name, 1, "$name: exec $exec $errors";
+        }
       }
     }
     if( my $t = getTimedTransition($transitions->{$new_state}) ) {
@@ -236,7 +244,7 @@ stateMachine_doTransition($$%)
 
   } elsif( defined($new_state) ) {
     delete $hash->{helper}{currentTransition};
-    Log3 $name, 2, "$name: no such state: $new_state";
+    Log3 $name, 1, "$name: no such state: $new_state";
 
   }
 
@@ -274,17 +282,19 @@ stateMachine_Notify($$)
   return undef if( !$transitions );
 
   if( !defined($current_state) || !defined($transitions->{$current_state}) ) {
-    Log3 $name, 2, "$name: unhandled state: $current_state";
+    Log3 $name, 1, "$name: unhandled state: $current_state";
     return undef;
   }
 
   $hash->{STATE} = $current_state;
 
-  $current_state = $transitions->{$current_state};
+  my $current_transitions = $transitions->{$current_state};
+
   my $max = int(@{$events});
   for (my $i = 0; $i < $max; $i++) {
     my $s = $events->[$i];
     $s = "" if(!defined($s));
+    Log3 $name, 1, "$name: got event $s " . $dev->{NAME};
 
     my ($reading,$value) = split(": ", $s, 2);
     next if( !$value );
@@ -292,17 +302,25 @@ stateMachine_Notify($$)
     my $NUM = $value;
     $NUM =~ s/[^-\.\d]//g;
 
-    if( ref($current_state) ne 'ARRAY' ) {
-      $current_state = [ $current_state ];
+    if( ref($current_transitions) ne 'ARRAY' ) {
+      $current_transitions = [ $current_transitions ];
     }
-    foreach my $t (@{$current_state}) {
+
+    foreach my $t (@{$current_transitions}) {
       next if( ref($t) ne 'HASH' );
-      next if( defined($t->{enter}) || defined($t->{leave}) );
-      next if( !defined($t->{event}) && defined($t->{timeout}) );
+      next if( defined($t->{enter}) || defined($t->{leave}) || defined($t->{groups}));
+      next if( !defined($t->{event}) );
+      Log3 $name, 1, "$name: transitionevent " . $t->{event};
       my ($device,$event) = split(':', $t->{event}, 2 );
 
+      Log3 $name, 1, "$name: device " . $device;
       if( $device ) {
-        $device = $hash->{DEVICES}[$1-1] if( $device =~ m/^\$(\d+)$/ );
+        if( $device =~ s/^\$(\d+)$/$1/ ) {
+          $device--;
+          Log3 $name, 1, "$name: device number " . $device;
+          $device = $hash->{DEVICES}[$device];
+        }
+        Log3 $name, 1, "$name: device parsed " . $device;
         next if( $dev->{NAME} !~ m/^$device$/ );
       }
       next if( $event && $value !~ m/$event/ );
@@ -321,14 +339,14 @@ stateMachine_Notify($$)
 
       if( my $timeout = $t->{timeout} ) {
         if( !$hash->{LAST_EVENT} || $hash->{LAST_EVENT} ne $value ) {
-          Log3 $name, 5, "$name: not the same event";
+          Log3 $name, 1, "$name: not the same event";
           delete $hash->{CURRENT_EVENT_COUNT};
           $hash->{LAST_EVENT} = $value;
           next;
         }
 
         if( !$hash->{LAST_EVENT_TIME} || gettimeofday() - $hash->{LAST_EVENT_TIME} > $timeout ) {
-          Log3 $name, 5, "$name: timeout expired";
+          Log3 $name, 1, "$name: timeout expired";
           $hash->{LAST_EVENT_TIME} = gettimeofday();
           delete $hash->{CURRENT_EVENT_COUNT};
           next;
@@ -352,11 +370,10 @@ stateMachine_Notify($$)
       #ignore event if condition evaluates to false
       if( my $condition = $t->{condition} ) {
         my $exec = EvalSpecials($condition, %specials);
-        Log3 $name, 4, "$name: exec $exec";
+        Log3 $name, 1, "$name: exec $exec";
 
         my $c = AnalyzeCommandChain(undef, $exec);
-        Log3 $name, 4, "$name: condition: $c" if($c);
-
+        Log3 $name, 1, "$name: condition: $c" if($c);
         next if( !$c );
       }
 
@@ -383,7 +400,15 @@ stateMachine_Set($@)
     return "usage: $cmd <state>" if( !$params[0] );
     return "no such state: $params[0]" if( !defined($hash->{helper}{transitions}{$params[0]}) );
 
-    $hash->{STATE} = $params[0];
+    my $t;
+    $t->{newState} = $params[0];
+    $t->{NAME} = $name;
+    my %specials = (   "%NAME" => $name,
+                       "%SELF" => $name,
+                     "%DEVICE" => $name,
+                     "%TARGET" => $hash->{TARGET},
+                   );
+    stateMachine_doTransition($hash, $t, \%specials);
     return undef;
   }
 
@@ -395,6 +420,79 @@ stateMachine_Get($@)
 {
   my ($hash, $name, @a) = @_;
 
+}
+
+sub generate_dot_file {
+  my ($states, $event, $filename) = @_;
+  my @keys = keys %{$states};
+  open(my $fh, '>', $filename);
+  print $fh "digraph G {\n";
+  foreach my $key (@keys) {
+    my $transitions = $states->{$key};
+    print $fh  $key . " [shape=none,margin=0,label=<<table BORDER= \"0\" CELLBORDER=\"1\" CELLSPACING=\"0\" CELLPADDING=\"4\">\n";
+    print $fh "<tr><td><b>" . $key . "</b></td></tr>\n";
+    if( my $setting = getSettingTransition($transitions) ) {
+      if( my $enters_setting = $setting->{enter} ) {
+        print $fh "<tr><td><font COLOR=\"blue\">enter:</font><br/>\n";
+        my @enters = split(/;/, $enters_setting);
+        foreach my $enter (@enters) {
+          print $fh $enter . "<br/>\n";
+        }
+        print $fh "</td></tr>\n";
+      }
+      if( my $leaves_setting = $setting->{leave} ) {
+        print $fh "<tr><td><font COLOR=\"blue\">leave:</font><br/>\n";
+        my @leaves = split(/;/, $leaves_setting);
+        foreach my $leave (@leaves) {
+          print $fh $leave . "<br/>\n";
+        }
+        print $fh "</td></tr>\n";
+      }
+      if( my $groups_setting = $setting->{groups} ) {
+        print $fh "<tr><td><font COLOR=\"blue\">groups:</font><br/>\n";
+        my @groups = split(/,/, $groups_setting);
+        foreach my $group (@groups) {
+          print $fh $group . "<br/>\n";
+        }
+        print $fh "</td></tr>\n";
+      }
+    }
+    print $fh "</table>>];\n";
+    foreach my $transition (@{$transitions}) {
+      if (defined($transition->{newState})) {
+        if (defined($transition->{event})) {
+          if ($transition->{event} =~ /$event/) {
+            print $fh $key . " -> " . $transition->{newState};
+            print $fh " [label=\"" . $transition->{event} . "\"]";
+            print $fh "\n";
+          }
+        }
+        if (defined($transition->{timeout})) {
+          print $fh $key . " -> " . $transition->{newState};
+          print $fh "[label=\"timeout=" . $transition->{timeout} . "\"]";
+          print $fh "\n";
+        }
+      }
+    }
+  }
+  print $fh "}\n";
+  close $fh;
+  system("dot", "-Tpng", $filename, "-o", $filename.".png", "&")
+}
+
+sub handle_groups {
+  my ($states) = @_;
+  my @keys = keys %{$states};
+  foreach my $key (@keys) {
+    if( my $setting = getSettingTransition($states->{$key}) ) {
+      if( my $groups_setting = $setting->{groups} ) {
+        my @groups = split(/,/, $groups_setting);
+        foreach my $group (@groups) {
+          push @{$states->{$key}}, @{$states->{$group}};
+        }
+      }
+    }
+  }
 }
 
 sub
@@ -422,13 +520,19 @@ stateMachine_Attr($$$)
     if( $cmd eq 'set' ) {
       my $transitions = eval $attrVal;
       if( $@ ) {
-        Log3 $hash->{NAME}, 3, "$name: $attrVal: $@";
+        Log3 $hash->{NAME}, 1, "$name: $attrVal: $@";
 
       } elsif( ref($transitions) eq 'HASH' ) {
+        handle_groups($transitions);
+        generate_dot_file($transitions, "1:", "statemaschine_event1.dot");
+        generate_dot_file($transitions, "2:", "statemaschine_event2.dot");
+        generate_dot_file($transitions, "3:", "statemaschine_event3.dot");
+        generate_dot_file($transitions, "4:", "statemaschine_event4.dot");
+        generate_dot_file($transitions, "", "statemaschine_all.dot");
         $hash->{helper}{$attrName} = $transitions;
 
       } else {
-        Log3 $hash->{NAME}, 2, "$name: not a hash: $transitions";
+        Log3 $hash->{NAME}, 1, "$name: not a hash: $transitions";
 
       }
 
